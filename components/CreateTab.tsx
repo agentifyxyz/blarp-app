@@ -1,10 +1,13 @@
 "use client";
 import { useState, useEffect } from "react";
 import sdk from "@farcaster/miniapp-sdk";
+import { encodeFunctionData, createPublicClient, http } from "viem";
+import { base } from "viem/chains";
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL;
 const ESCROW = process.env.NEXT_PUBLIC_ESCROW_CONTRACT as `0x${string}`;
 const BLARP_TOKEN = process.env.NEXT_PUBLIC_BLARP_TOKEN as `0x${string}`;
+const BASE_CHAIN_ID = "0x2105";
 
 const TASKS = [
   { bit: 1, label: "Like" },
@@ -22,6 +25,19 @@ const DURATIONS = [
   { label: "7 Days", seconds: 604800 },
 ];
 
+const TOKEN_ABI = [
+  {
+    inputs: [
+      { internalType: "address", name: "spender", type: "address" },
+      { internalType: "uint256", name: "amount", type: "uint256" },
+    ],
+    name: "approve",
+    outputs: [{ internalType: "bool", name: "", type: "bool" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+] as const;
+
 const ESCROW_ABI = [
   {
     inputs: [
@@ -36,18 +52,10 @@ const ESCROW_ABI = [
   },
 ] as const;
 
-const TOKEN_ABI = [
-  {
-    inputs: [
-      { internalType: "address", name: "spender", type: "address" },
-      { internalType: "uint256", name: "amount", type: "uint256" },
-    ],
-    name: "approve",
-    outputs: [{ internalType: "bool", name: "", type: "bool" }],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-] as const;
+const publicClient = createPublicClient({
+  chain: base,
+  transport: http("https://mainnet.base.org"),
+});
 
 export default function CreateTab() {
   const [castUrl, setCastUrl] = useState("");
@@ -64,8 +72,9 @@ export default function CreateTab() {
     sdk.context.then((ctx) => {
       setFid(ctx?.user?.fid || null);
     });
-    sdk.wallet.ethProvider.request({ method: "eth_requestAccounts" })
-      .then((accounts: string[]) => setAddress(accounts[0] || null))
+    sdk.wallet.ethProvider
+      .request({ method: "eth_requestAccounts" })
+      .then((accounts: any) => setAddress(accounts[0] || null))
       .catch(() => {});
   }, []);
 
@@ -89,29 +98,52 @@ export default function CreateTab() {
 
     try {
       const provider = sdk.wallet.ethProvider;
+
+      // Switch to Base
+      await provider.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: BASE_CHAIN_ID }],
+      });
+
       const poolWei = BigInt(poolNum) * BigInt(10 ** 18);
 
-      // 1. Approve token
+      // 1. Approve
+      const approveData = encodeFunctionData({
+        abi: TOKEN_ABI,
+        functionName: "approve",
+        args: [ESCROW, poolWei],
+      });
+
       const approveTx = await provider.request({
         method: "eth_sendTransaction",
         params: [{
           from: address,
           to: BLARP_TOKEN,
-          data: encodeFunctionData(TOKEN_ABI, "approve", [ESCROW, poolWei]),
+          data: approveData,
+          chainId: BASE_CHAIN_ID,
         }],
       });
-      await waitForTx(approveTx);
+
+      await publicClient.waitForTransactionReceipt({ hash: approveTx as `0x${string}` });
 
       // 2. Create campaign
+      const createData = encodeFunctionData({
+        abi: ESCROW_ABI,
+        functionName: "createCampaign",
+        args: [poolWei, BigInt(duration), taskMask],
+      });
+
       const createTx = await provider.request({
         method: "eth_sendTransaction",
         params: [{
           from: address,
           to: ESCROW,
-          data: encodeFunctionData(ESCROW_ABI, "createCampaign", [poolWei, BigInt(duration), taskMask]),
+          data: createData,
+          chainId: BASE_CHAIN_ID,
         }],
       });
-      const receipt = await waitForTx(createTx);
+
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: createTx as `0x${string}` });
 
       // 3. Register in backend
       const endTime = new Date(Date.now() + duration * 1000).toISOString();
@@ -119,7 +151,7 @@ export default function CreateTab() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          campaign_id: 1, // TODO: parse from tx logs
+          campaign_id: Number(receipt.blockNumber),
           creator_fid: fid,
           creator_address: address,
           cast_url: castUrl,
@@ -131,26 +163,13 @@ export default function CreateTab() {
         }),
       });
 
-      setSuccess("Campaign launched!");
+      setSuccess("Campaign launched! 🎉");
       setCastUrl(""); setPool(""); setTaskMask(0); setDuration(0);
     } catch (err: any) {
       setError(err.message || "Transaction failed.");
     }
     setLoading(false);
   };
-
-  // Simple ABI encoder using viem
-  function encodeFunctionData(abi: any, name: string, args: any[]) {
-    const { encodeFunctionData } = require("viem");
-    return encodeFunctionData({ abi, functionName: name, args });
-  }
-
-  async function waitForTx(hash: string): Promise<any> {
-    const { createPublicClient, http } = require("viem");
-    const { base } = require("viem/chains");
-    const client = createPublicClient({ chain: base, transport: http(process.env.NEXT_PUBLIC_BASE_RPC) });
-    return client.waitForTransactionReceipt({ hash });
-  }
 
   return (
     <div className="px-4 py-4 space-y-5">
