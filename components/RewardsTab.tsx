@@ -35,7 +35,7 @@ export default function RewardsTab() {
           setRewards(Array.isArray(data) ? data : []);
           setLoading(false);
         })
-        .catch(() setLoading(false));
+        .catch(() => setLoading(false));
     });
   }, []);
 
