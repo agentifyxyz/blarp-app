@@ -151,7 +151,7 @@ export default function CreateTab() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          campaign_id: Number(receipt.blockNumber),
+          campaign_id: (await import("@/lib/parseCampaignId")).parseCampaignId(receipt) || Number(receipt.blockNumber),
           creator_fid: fid,
           creator_address: address,
           cast_url: castUrl,
